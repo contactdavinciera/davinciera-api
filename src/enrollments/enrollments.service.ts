@@ -1,76 +1,152 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { CreateEnrollmentDto } from './dto/create-enrollment.dto';
 import { UpdateEnrollmentDto } from './dto/update-enrollment.dto';
-import { Enrollment } from './entities/enrollment.entity';
-import { v4 as uuidv4 } from 'uuid';
+import { PrismaService } from '../prisma/prisma.service';
+import { Enrollment, EnrollmentStatus, PaymentStatus } from '@prisma/client';
+import { StripeService } from '../stripe/stripe.service';
+import { CoursesService } from '../courses/courses.service';
 
 @Injectable()
 export class EnrollmentsService {
-  private enrollments: Enrollment[] = []; // In-memory storage
+  constructor(
+    private prisma: PrismaService,
+    private stripeService: StripeService,
+    private coursesService: CoursesService,
+  ) {}
 
-  constructor() {
-    this.enrollments.push(
-      {
-        id: 'enr-001',
-        userId: 'usr-001',
-        courseId: 'crs-001',
-        enrollmentDate: new Date('2025-09-10'),
-        progress: 75,
-        status: 'in-progress',
-        createdAt: new Date(),
-        updatedAt: new Date(),
+  async create(createEnrollmentDto: CreateEnrollmentDto): Promise<Enrollment> {
+    // Check if user is already enrolled in the course
+    const existingEnrollment = await this.prisma.enrollment.findUnique({
+      where: {
+        userId_courseId: {
+          userId: createEnrollmentDto.userId,
+          courseId: createEnrollmentDto.courseId,
+        },
       },
-      {
-        id: 'enr-002',
-        userId: 'usr-001',
-        courseId: 'crs-002',
-        enrollmentDate: new Date('2025-08-01'),
-        completionDate: new Date('2025-09-20'),
-        progress: 100,
-        status: 'completed',
-        createdAt: new Date(),
-        updatedAt: new Date(),
+    });
+
+    if (existingEnrollment) {
+      throw new BadRequestException('User is already enrolled in this course.');
+    }
+
+    return this.prisma.enrollment.create({
+      data: {
+        ...createEnrollmentDto,
+        status: createEnrollmentDto.status as EnrollmentStatus,
+        paymentStatus: createEnrollmentDto.paymentStatus as PaymentStatus,
       },
+    });
+  }
+
+  async createEnrollmentCheckoutSession(
+    userId: string,
+    courseId: string,
+    successUrl: string,
+    cancelUrl: string,
+  ): Promise<{ sessionId: string; enrollmentId: string }> {
+    const course = await this.coursesService.findOne(courseId);
+    if (!course) {
+      throw new NotFoundException(`Course with ID ${courseId} not found`);
+    }
+
+    // Create a pending enrollment record
+    const pendingEnrollment = await this.prisma.enrollment.create({
+      data: {
+        userId,
+        courseId,
+        status: EnrollmentStatus.PENDING, // Mark as pending until payment is confirmed
+        paymentStatus: PaymentStatus.PENDING,
+        paymentAmount: course.price,
+      },
+    });
+
+    const session = await this.stripeService.createCheckoutSession(
+      course.id,
+      course.title,
+      course.price,
+      successUrl,
+      cancelUrl,
+      { enrollmentId: pendingEnrollment.id, userId: userId }, // Pass enrollmentId and userId as metadata
     );
+
+    // Update the pending enrollment with the Stripe Checkout Session ID
+    await this.prisma.enrollment.update({
+      where: { id: pendingEnrollment.id },
+      data: { stripeCheckoutSessionId: session.id },
+    });
+
+    return { sessionId: session.id, enrollmentId: pendingEnrollment.id };
   }
 
-  create(createEnrollmentDto: CreateEnrollmentDto): Enrollment {
-    const newEnrollment: Enrollment = {
-      id: uuidv4(),
-      ...createEnrollmentDto,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-    this.enrollments.push(newEnrollment);
-    return newEnrollment;
+  async findAll(): Promise<Enrollment[]> {
+    return this.prisma.enrollment.findMany({
+      include: {
+        user: true,
+        course: true,
+      },
+    });
   }
 
-  findAll(): Enrollment[] {
-    return this.enrollments;
-  }
+  async findOne(id: string): Promise<Enrollment> {
+    const enrollment = await this.prisma.enrollment.findUnique({
+      where: { id },
+      include: {
+        user: true,
+        course: true,
+      },
+    });
 
-  findOne(id: string): Enrollment {
-    const enrollment = this.enrollments.find(enrollment => enrollment.id === id);
     if (!enrollment) {
       throw new NotFoundException(`Enrollment with ID ${id} not found`);
     }
     return enrollment;
   }
 
-  update(id: string, updateEnrollmentDto: UpdateEnrollmentDto): Enrollment {
-    const enrollmentIndex = this.enrollments.findIndex(enrollment => enrollment.id === id);
-    if (enrollmentIndex === -1) {
+  async update(id: string, updateEnrollmentDto: UpdateEnrollmentDto): Promise<Enrollment> {
+    try {
+      return await this.prisma.enrollment.update({
+        where: { id },
+        data: {
+          ...updateEnrollmentDto,
+          status: updateEnrollmentDto.status as EnrollmentStatus,
+          paymentStatus: updateEnrollmentDto.paymentStatus as PaymentStatus,
+          updatedAt: new Date(),
+        },
+      });
+    } catch (error) {
       throw new NotFoundException(`Enrollment with ID ${id} not found`);
     }
-    this.enrollments[enrollmentIndex] = { ...this.enrollments[enrollmentIndex], ...updateEnrollmentDto, updatedAt: new Date() };
-    return this.enrollments[enrollmentIndex];
   }
 
-  remove(id: string): void {
-    const initialLength = this.enrollments.length;
-    this.enrollments = this.enrollments.filter(enrollment => enrollment.id !== id);
-    if (this.enrollments.length === initialLength) {
+  async updateEnrollmentStatusBySessionId(sessionId: string, paymentIntentId: string, status: EnrollmentStatus, paymentStatus: PaymentStatus): Promise<Enrollment> {
+    const enrollment = await this.prisma.enrollment.findUnique({
+      where: { stripeCheckoutSessionId: sessionId },
+    });
+
+    if (!enrollment) {
+      throw new NotFoundException(`Enrollment with Stripe Checkout Session ID ${sessionId} not found`);
+    }
+
+    return this.prisma.enrollment.update({
+      where: { id: enrollment.id },
+      data: {
+        status,
+        paymentStatus,
+        stripePaymentIntentId: paymentIntentId,
+        paymentDate: new Date(),
+        enrolledAt: new Date(),
+      },
+    });
+  }
+
+  async remove(id: string): Promise<void> {
+    try {
+      await this.prisma.enrollment.delete({
+        where: { id },
+      });
+    } catch (error) {
       throw new NotFoundException(`Enrollment with ID ${id} not found`);
     }
   }
 }
+

@@ -1,4 +1,5 @@
 import { NestFactory } from '@nestjs/core';
+import * as express from 'express';
 import { AppModule } from './app.module';
 
 async function bootstrap() {
@@ -11,6 +12,16 @@ async function bootstrap() {
     credentials: true,
   });
 
+  // For Stripe webhooks, we need the raw body. We use a conditional middleware.
+  app.use((req, res, next) => {
+    if (req.originalUrl === '/stripe/webhook') {
+      express.raw({ type: '*/*' })(req, res, next);
+    } else {
+      express.json()(req, res, next);
+    }
+  });
+
   await app.listen(process.env.PORT ?? 3000);
 }
 bootstrap();
+

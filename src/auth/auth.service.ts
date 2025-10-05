@@ -43,6 +43,7 @@ export class AuthService {
     const user = await this.usersService.create({
       ...registerDto,
       password: hashedPassword,
+      role: registerDto.role.toUpperCase() as any, // Convert to uppercase and cast to UserRole
     });
 
     const { password, ...result } = user;
