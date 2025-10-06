@@ -40,3 +40,6 @@ bootstrap();
 
 // Trigger Vercel redeploy
 
+
+// Forçando um novo deploy para limpar o cache do Vercel
+
