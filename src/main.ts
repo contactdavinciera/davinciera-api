@@ -7,7 +7,7 @@ async function bootstrap() {
   
   // Enable CORS for frontend integration
   app.enableCors({
-    origin: ['https://davinciera-official.pages.dev', 'http://localhost:3000', 'http://localhost:5173'],
+    origin: ['https://davinciera-official.pages.dev', 'https://davinciera.pages.dev', 'http://localhost:3000', 'http://localhost:5173'],
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
     credentials: true,
   });
