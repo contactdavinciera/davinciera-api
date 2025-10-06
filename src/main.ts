@@ -12,6 +12,17 @@ async function bootstrap() {
     credentials: true,
   });
 
+  // Handle OPTIONS requests for CORS preflight
+  app.use((req, res, next) => {
+    if (req.method === 'OPTIONS') {
+      res.header('Access-Control-Allow-Origin', '*'); // Allow all origins for OPTIONS, then restrict for actual requests
+      res.header('Access-Control-Allow-Methods', 'GET,HEAD,PUT,PATCH,POST,DELETE');
+      res.header('Access-Control-Allow-Headers', 'Content-Type, Accept, Authorization');
+      return res.sendStatus(200);
+    }
+    next();
+  });
+
   // For Stripe webhooks, we need the raw body. We use a conditional middleware.
   app.use((req, res, next) => {
     if (req.originalUrl === '/stripe/webhook') {
